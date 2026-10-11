@@ -55,11 +55,17 @@ async def ping():
     return {"message": "pong"}
 
 
+from fastapi.staticfiles import StaticFiles
 from app.api.routers import projects, pipeline, assets  # noqa: E402
 
 app.include_router(projects.router, prefix=settings.api_prefix, tags=["projects"])
 app.include_router(pipeline.router, prefix=settings.api_prefix, tags=["pipeline"])
 app.include_router(assets.router, prefix=settings.api_prefix, tags=["assets"])
+
+# Mount projects static directory for direct video playback and download in browser
+if settings.projects_dir.exists():
+    app.mount("/projects", StaticFiles(directory=str(settings.projects_dir)), name="projects")
+
 
 
 if __name__ == "__main__":

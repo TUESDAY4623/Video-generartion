@@ -55,7 +55,7 @@ CLIPS_PER_SCENE_MAX = 12
 
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge")
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "en-US-JennyNeural")
-NUM_WORKERS = os.cpu_count() or 4
+NUM_WORKERS = min(4, os.cpu_count() or 4)
 
 # ── Shared theme ──────────────────────────────────────────────────────────────
 THEME = {
@@ -1636,44 +1636,128 @@ def build_outro_visual(scene: dict, clip: dict, clip_id: str, scene_id: str) -> 
     return _base_html(scene["title"], body, clip_id, scene_id, css)
 
 
-def build_clip_html(scene: dict, clip: dict, clip_id: str, scene_id: str) -> str:
-    """Build HTML for a clip using dynamic semantic specs (Mermaid, code, process flow) or templates."""
-    # Check if scene has dynamic visual specification
-    vspec_dict = scene.get("visual_spec")
-    if vspec_dict and isinstance(vspec_dict, dict):
-        try:
-            renderer = DiagramRenderer()
-            spec = VisualSceneSpec(
-                scene_id=clip_id,
-                visual_type=vspec_dict.get("visual_type", "concept_card"),
-                title=vspec_dict.get("title") or scene.get("title", "Overview"),
-                subtitle=vspec_dict.get("subtitle") or clip.get("title"),
-                diagram_code=vspec_dict.get("diagram_code"),
-                steps=vspec_dict.get("steps", []),
-                comparison_items=vspec_dict.get("comparison_items", []),
-                code_snippet=vspec_dict.get("code_snippet"),
-                code_language=vspec_dict.get("code_language", "python"),
-                highlight_lines=vspec_dict.get("highlight_lines", []),
-                key_points=vspec_dict.get("key_points") or [clip.get("narration", "")[:100]],
-                accent_color=vspec_dict.get("accent_color", "#7c83ff"),
-            )
-            return renderer.render_scene_html(spec)
-        except Exception as e:
-            log.warning("Dynamic diagram render error (%s), falling back to template", e)
+def _infer_visual_spec_from_narration(scene: dict, clip: dict) -> dict:
+    """Intelligently infers 1080p visual specs for ANY topic/script based on semantic narration cues."""
+    narration = scene.get("narration", "") or clip.get("narration", "")
+    title = scene.get("title", "Core Concept")
+    lower = (title + " " + narration).lower()
+    
+    # 1. Code walkthrough detection
+    if any(k in lower for k in ["code", "payload", "json", "syntax", "function", "def ", "class ", "jwt payload", "programming"]):
+        snippet = "{\n  \"status\": \"authenticated\",\n  \"role\": \"admin\",\n  \"expires_in\": 900,\n  \"scope\": [\"read\", \"write\"]\n}"
+        if "jwt" in lower:
+            snippet = "{\n  \"sub\": \"usr_882910\",\n  \"jti\": \"e4a19b88-1c49-4320\",\n  \"iat\": 1727800000,\n  \"exp\": 1727800900,\n  \"role\": \"engineer\"\n}"
+        return {
+            "visual_type": "code_walkthrough",
+            "title": title,
+            "subtitle": "Syntax & Implementation Walkthrough",
+            "code_snippet": snippet,
+            "code_language": "json",
+            "highlight_lines": [2, 3],
+        }
+        
+    # 2. Comparison detection (A vs B, versus, difference)
+    if any(k in lower for k in [" vs ", "versus", "comparison", "difference", "compare", "access token vs", "state vs stateless"]):
+        parts = [p.strip() for p in re.split(r'\s+(?:vs|versus)\s+', title, flags=re.IGNORECASE)]
+        item1 = parts[0] if len(parts) > 0 else "Approach A"
+        item2 = parts[1] if len(parts) > 1 else "Approach B"
+        return {
+            "visual_type": "comparison",
+            "title": title,
+            "subtitle": "Comparative Architecture & Trade-offs",
+            "accent_color": "#7c83ff",
+            "comparison_items": [
+                {"title": item1, "subtitle": "Primary Characteristics", "points": ["Lightweight & stateless", "Fast local verification", "Short-lived security barrier"]},
+                {"title": item2, "subtitle": "Extended Lifecycle", "points": ["Monitored & stateful", "Used for session refresh", "Breach detection enabled"], "highlight": True}
+            ]
+        }
+        
+    # 3. Process flow detection (steps, phases, rotation, lifecycle)
+    if any(k in lower for k in ["step", "phase", "process", "rotation", "lifecycle", "workflow", "how to"]):
+        sentences = [s.strip() for s in re.split(r'[.!?]', narration) if len(s.strip()) > 10]
+        steps = []
+        for i, s in enumerate(sentences[:3]):
+            steps.append({
+                "title": f"Phase 0{i+1}",
+                "desc": s[:90] + "..." if len(s) > 90 else s
+            })
+        if not steps:
+            steps = [
+                {"title": "1. Initialize Request", "desc": "Send parameters to server"},
+                {"title": "2. Verify & Process", "desc": "Validate signature and execute rules"},
+                {"title": "3. Output Result", "desc": "Return verified response payload"}
+            ]
+        return {
+            "visual_type": "process_flow",
+            "title": title,
+            "subtitle": "Step-by-Step Execution Lifecycle",
+            "accent_color": "#00d4aa",
+            "steps": steps
+        }
+        
+    # 4. Architecture / system diagram detection
+    if any(k in lower for k in ["architecture", "flow", "request", "server", "gateway", "database", "client", "service"]):
+        return {
+            "visual_type": "diagram",
+            "title": title,
+            "subtitle": "Distributed System Architecture & Flow",
+            "accent_color": "#00d4aa",
+            "diagram_code": "graph LR\n  C[1. Client Application] -->|API Request| S[2. Auth / API Gateway]\n  S -->|Verify Logic| DB[(3. Protected Resources)]"
+        }
+        
+    # 5. Default: Concept card with active bullet highlights
+    sentences = [s.strip() for s in re.split(r'[.!?]', narration) if len(s.strip()) > 10]
+    points = sentences[:4] if sentences else ["Core foundational principles.", "Production architecture and best practices.", "Implementation considerations."]
+    return {
+        "visual_type": "concept_card",
+        "title": title,
+        "subtitle": "Key Concepts & Strategic Takeaways",
+        "accent_color": "#7c83ff",
+        "key_points": points
+    }
 
-    scene_idx = scene.get("index", 0)
-    builders = [
-        build_intro_visual,
-        build_binary_visual,
-        build_ascii_rgb_visual,
-        build_algorithm_visual,
-        build_io_function_loop_visual,
-        build_outro_visual,
-    ]
-    if scene_idx < len(builders):
-        return builders[scene_idx](scene, clip, clip_id, scene_id)
-    # Fallback
-    return build_outro_visual(scene, clip, clip_id, scene_id)
+
+def build_clip_html(scene: dict, clip: dict, clip_id: str, scene_id: str) -> str:
+    """Build HTML for a clip using dynamic semantic specs (Mermaid, code, process flow) or intelligent inference."""
+    vspec_dict = scene.get("visual_spec")
+    if not vspec_dict or not isinstance(vspec_dict, dict):
+        vspec_dict = _infer_visual_spec_from_narration(scene, clip)
+
+    try:
+        renderer = DiagramRenderer()
+        spec = VisualSceneSpec(
+            scene_id=clip_id,
+            visual_type=vspec_dict.get("visual_type", "concept_card"),
+            title=vspec_dict.get("title") or scene.get("title", "Overview"),
+            subtitle=vspec_dict.get("subtitle") or clip.get("title") or scene.get("title"),
+            diagram_code=vspec_dict.get("diagram_code"),
+            steps=vspec_dict.get("steps", []),
+            comparison_items=vspec_dict.get("comparison_items", []),
+            code_snippet=vspec_dict.get("code_snippet"),
+            code_language=vspec_dict.get("code_language", "json"),
+            highlight_lines=vspec_dict.get("highlight_lines", []),
+            key_points=vspec_dict.get("key_points") or [clip.get("narration", "")[:100]],
+            accent_color=vspec_dict.get("accent_color", "#7c83ff"),
+            clip_index=clip.get("clip_index", 0),
+            total_clips=clip.get("total_clips", 1),
+            narration_text=clip.get("narration", ""),
+        )
+        return renderer.render_scene_html(spec)
+    except Exception as e:
+        log.warning("Dynamic diagram render error (%s), using fallback concept card", e)
+        renderer = DiagramRenderer()
+        spec = VisualSceneSpec(
+            scene_id=clip_id,
+            visual_type="concept_card",
+            title=scene.get("title", "Key Concept"),
+            subtitle="Overview & Execution Details",
+            key_points=[clip.get("narration", "")[:120]],
+            accent_color="#7c83ff",
+            clip_index=clip.get("clip_index", 0),
+            total_clips=clip.get("total_clips", 1),
+            narration_text=clip.get("narration", ""),
+        )
+        return renderer.render_scene_html(spec)
 
 
 def generate_all_clip_html(scenes, clips_dir):
@@ -1793,8 +1877,6 @@ _RENDER_HELPER: Path | None = None
 
 def _get_render_helper():
     global _RENDER_HELPER
-    if _RENDER_HELPER and _RENDER_HELPER.exists():
-        return _RENDER_HELPER
     helper = Path(__file__).parent / "_render_clip.py"
     helper.write_text(r'''import sys, time, shutil, os
 from pathlib import Path
@@ -1805,7 +1887,7 @@ height = int(sys.argv[4])
 record_dir = Path(sys.argv[5])
 try:
     from playwright.sync_api import sync_playwright
-    record_duration = duration + 0.5
+    record_duration = duration + 0.6
     with sync_playwright() as p:
         browser = p.chromium.launch(
             args=["--disable-web-security", "--no-sandbox", "--disable-dev-shm-usage",
@@ -1818,17 +1900,17 @@ try:
             record_video_size={"width": width, "height": height},
         )
         page = context.new_page()
-        page.goto(f"file:///{html_path.as_posix()}")
-        page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(300)
-        time.sleep(record_duration)
-        video_path = page.video.path()
+        page.goto(f"file:///{html_path.resolve().as_posix()}", wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(350)
+        start_time = time.time()
+        while time.time() - start_time < record_duration:
+            page.wait_for_timeout(50)
+        video = page.video
         page.close()
+        final_path = record_dir / "output.webm"
+        video.save_as(str(final_path))
         context.close()
         browser.close()
-    os.makedirs(record_dir, exist_ok=True)
-    final_path = record_dir / "output.webm"
-    shutil.move(video_path, str(final_path))
     print("OK")
 except Exception as e:
     import traceback
@@ -1840,38 +1922,44 @@ except Exception as e:
     return helper
 
 
-def _render_one_clip(html_path, output_path, duration):
+def _render_one_clip(html_path, output_path, duration, retries=2):
     record_dir = output_path.parent / f"_rec_{output_path.stem}"
-    record_dir.mkdir(parents=True, exist_ok=True)
     helper = _get_render_helper()
-    try:
-        result = subprocess.run(
-            [sys.executable, str(helper), str(html_path), str(duration),
-             str(WIDTH), str(HEIGHT), str(record_dir)],
-            capture_output=True, text=True, timeout=int(duration + 30),
-        )
-        if result.returncode != 0:
-            log.warning("  Playwright failed for %s: %s", output_path.name, result.stderr.strip()[-200:])
-            return False
-        webm_path = record_dir / "output.webm"
-        if not webm_path.exists():
-            return False
-        result = subprocess.run([
-            "ffmpeg", "-y", "-i", str(webm_path),
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-vf", f"fps={FPS},scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:-1:-1:color=#050514,format=yuv420p",
-            "-an", "-t", str(duration), str(output_path),
-        ], capture_output=True, text=True, timeout=60)
-        return result.returncode == 0
-    finally:
-        if record_dir.exists():
-            shutil.rmtree(record_dir, ignore_errors=True)
+    
+    for attempt in range(retries):
+        record_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(helper), str(html_path), str(duration),
+                 str(WIDTH), str(HEIGHT), str(record_dir)],
+                capture_output=True, text=True, timeout=int(duration + 90),
+            )
+            if result.returncode != 0:
+                log.warning("  Playwright attempt %d failed for %s: %s", attempt + 1, output_path.name, result.stderr.strip()[-200:])
+                continue
+            webm_path = record_dir / "output.webm"
+            if not webm_path.exists() or webm_path.stat().st_size < 1000:
+                continue
+            result = subprocess.run([
+                "ffmpeg", "-y", "-i", str(webm_path),
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                "-r", str(FPS),
+                "-vf", f"fps={FPS},scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:-1:-1:color=#050514,format=yuv420p",
+                "-an", "-t", str(duration), str(output_path),
+            ], capture_output=True, text=True, timeout=90)
+            if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 1000:
+                return True
+        finally:
+            if record_dir.exists():
+                shutil.rmtree(record_dir, ignore_errors=True)
+        time.sleep(0.5)
+    return False
 
 
 def render_all_clips_parallel(clips, videos_dir, max_workers=None):
     if max_workers is None:
-        max_workers = NUM_WORKERS
+        max_workers = min(4, NUM_WORKERS)
     videos_dir.mkdir(parents=True, exist_ok=True)
     results = []
     total = len(clips)
@@ -1926,28 +2014,31 @@ def concat_clips_with_audio(clips, videos_dir, audio_dir, output_path):
             clip_duration = clip["duration_seconds"]
             if not video_path.exists() or not video_path.stat().st_size > 1000:
                 continue
+            clip_output = work_dir / f"sc_{scene_idx:02d}_{clip['clip_index']:02d}.mp4"
             if audio_path.exists() and audio_path.stat().st_size > 1000:
-                clip_output = work_dir / f"sc_{scene_idx:02d}_{clip['clip_index']:02d}.mp4"
                 result = subprocess.run([
                     "ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path),
                     "-map", "0:v:0", "-map", "1:a:0",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                    "-af", "apad=pad_dur=999", "-t", str(clip_duration + 1),
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-pix_fmt", "yuv420p", "-r", str(FPS),
+                    "-af", "apad=pad_dur=999", "-t", str(clip_duration),
                     str(clip_output),
-                ], capture_output=True, text=True, timeout=30)
+                ], capture_output=True, text=True, timeout=60)
                 if result.returncode == 0:
                     scene_mp4s.append(clip_output)
                 else:
                     scene_mp4s.append(video_path)
             else:
-                clip_output = work_dir / f"sc_{scene_idx:02d}_{clip['clip_index']:02d}.mp4"
                 result = subprocess.run([
                     "ffmpeg", "-y", "-i", str(video_path),
                     "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                     "-map", "0:v:0", "-map", "1:a:0",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                    "-t", str(clip_duration + 1), str(clip_output),
-                ], capture_output=True, text=True, timeout=30)
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-pix_fmt", "yuv420p", "-r", str(FPS),
+                    "-t", str(clip_duration), str(clip_output),
+                ], capture_output=True, text=True, timeout=60)
                 if result.returncode == 0:
                     scene_mp4s.append(clip_output)
                 else:
