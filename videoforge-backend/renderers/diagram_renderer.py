@@ -424,17 +424,17 @@ class DiagramRenderer:
         position: relative;
     }}
     .arch-node-active {{
-        background: rgba(25, 25, 62, 0.95);
+        background: rgba(25, 25, 62, 0.98);
         border: 2px solid {spec.accent_color};
-        box-shadow: 0 0 60px {spec.accent_color}55, 0 20px 50px rgba(0,0,0,0.6);
+        box-shadow: 0 0 60px {spec.accent_color}66, 0 20px 50px rgba(0,0,0,0.7);
         transform: scale(1.06) translateY(-6px);
         z-index: 5;
     }}
     .arch-node-dim {{
-        background: rgba(12, 12, 32, 0.78);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 10px 30px rgba(0,0,0,0.4);
-        opacity: 0.7;
+        background: rgba(14, 14, 36, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        opacity: 0.88;
     }}
     .arch-node-header {{
         display: flex;

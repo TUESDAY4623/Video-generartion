@@ -24,7 +24,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # Ensure videoforge-backend root is in sys.path regardless of CWD
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+backend_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(backend_dir))
+bin_dir = backend_dir / "bin"
+if bin_dir.exists():
+    os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
 from app.adapters.chat_tts_adapter import ChatTTSAdapter
 from app.adapters.whisper_aligner import WhisperAligner
@@ -1818,21 +1822,25 @@ async def _generate_clip_audio(clip, semaphore, audio_dir):
 
         if output_path.exists() and output_path.stat().st_size > 1000:
             dur = get_audio_duration(output_path)
+            clip_dur = max(round(dur + 0.4, 2), 2.5)
             alignments = aligner.align_audio(output_path, script_text=text, duration=dur)
             return {
                 **clip,
                 "audio_path": str(output_path),
                 "audio_duration": dur,
+                "duration_seconds": clip_dur,
                 "alignments": [a.to_dict() for a in alignments],
                 "cached": True
             }
 
         if not text:
-            make_silent_audio(output_path, clip["duration_seconds"])
+            clip_dur = clip.get("duration_seconds", 3.0)
+            make_silent_audio(output_path, clip_dur)
             return {
                 **clip,
                 "audio_path": str(output_path),
-                "audio_duration": clip["duration_seconds"],
+                "audio_duration": clip_dur,
+                "duration_seconds": clip_dur,
                 "alignments": [],
                 "cached": False
             }
@@ -1840,22 +1848,26 @@ async def _generate_clip_audio(clip, semaphore, audio_dir):
         try:
             await tts_adapter.generate_speech(text, output_path)
             dur = get_audio_duration(output_path)
+            clip_dur = max(round(dur + 0.4, 2), 2.5)
             alignments = aligner.align_audio(output_path, script_text=text, duration=dur)
             return {
                 **clip,
                 "audio_path": str(output_path),
                 "audio_duration": dur,
+                "duration_seconds": clip_dur,
                 "alignments": [a.to_dict() for a in alignments],
                 "cached": False
             }
         except Exception as e:
             log.warning("  Clip %s: TTS generation error (%s), using fallback", clip_id, e)
-            dur = max(1.0, len(text.split()) / WPM * 60)
-            make_silent_audio(output_path, dur)
+            dur = max(2.5, len(text.split()) / WPM * 60)
+            clip_dur = max(round(dur + 0.4, 2), 2.5)
+            make_silent_audio(output_path, clip_dur)
             return {
                 **clip,
                 "audio_path": str(output_path),
-                "audio_duration": dur,
+                "audio_duration": clip_dur,
+                "duration_seconds": clip_dur,
                 "alignments": [],
                 "cached": False
             }
@@ -2016,13 +2028,15 @@ def concat_clips_with_audio(clips, videos_dir, audio_dir, output_path):
                 continue
             clip_output = work_dir / f"sc_{scene_idx:02d}_{clip['clip_index']:02d}.mp4"
             if audio_path.exists() and audio_path.stat().st_size > 1000:
+                audio_dur = get_audio_duration(audio_path)
+                actual_dur = max(clip_duration, round(audio_dur + 0.3, 2))
                 result = subprocess.run([
                     "ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path),
                     "-map", "0:v:0", "-map", "1:a:0",
                     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
                     "-c:a", "aac", "-b:a", "192k",
                     "-pix_fmt", "yuv420p", "-r", str(FPS),
-                    "-af", "apad=pad_dur=999", "-t", str(clip_duration),
+                    "-af", "apad=pad_dur=999", "-t", str(actual_dur),
                     str(clip_output),
                 ], capture_output=True, text=True, timeout=60)
                 if result.returncode == 0:
